@@ -3,6 +3,8 @@ import os
 from subprocess import Popen
 from subprocess import PIPE
 
+import IPython
+
 from cloudpickle import dumps
 from pickle import loads
 
@@ -14,6 +16,11 @@ except ImportError:
     class TimeoutExpired(Exception):
         pass
     timeout_supported = False
+
+try:
+    from queue import Empty  # Python 3
+except ImportError:
+    from Queue import Empty  # Python 2
 
 
 def subprocess_pickle_echo(input_data):
@@ -45,6 +52,31 @@ def subprocess_pickle_echo(input_data):
         message = u"\n".join([out.decode('utf-8'), err.decode('utf-8')])
         raise RuntimeError(message)
 
+def ipython_kernel_pickle_echo(input_data):
+    pickled_input_data = dumps(input_data)
+
+    km, client = IPython.kernel.manager.start_new_kernel()
+    client.execute("import pickle")
+    client.execute("import cloudpickle")
+
+    code = "cloudpickle.dumps(pickle.loads({}))".format(pickled_input_data)
+    dump_id = client.execute(code)
+
+    winner = None
+
+    try:
+        while(True):
+            message = client.get_iopub_msg(timeout=0.1)
+            if(message['msg_type'] == 'execute_result' and
+               message['parent_header']['msg_id'] == dump_id):
+                winner = message['content']['data']['text/plain']
+
+    except Empty:
+        pass
+    km.shutdown_kernel(now=True)
+
+    pickle_string = eval(winner)
+    return loads(pickle_string)
 
 def pickle_echo(stream_in=None, stream_out=None):
     """Read a pickle from stdin and pickle it back to stdout"""
